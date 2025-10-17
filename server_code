@@ -1,0 +1,477 @@
+const express = require('express');
+const mysql = require('mysql2');
+const path = require('path');
+const static = require('serve-static');
+const dbconfig = require('./config/dbconfig.json');
+const crypto = require('crypto');
+const cors = require('cors'); // cors 모듈 추가
+
+const pool = mysql.createPool({
+    connectionLimit: 10,
+    host: dbconfig.host,
+    user: dbconfig.user,
+    password: dbconfig.password,
+    database: dbconfig.database,
+    port: dbconfig.port,
+    debug: false
+});
+
+const app = express();
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use('/public', static(path.join(__dirname, 'public')));
+app.use('/HTML', express.static(path.join(__dirname, 'public/HTML')));
+app.use('/CSS', express.static(path.join(__dirname, 'public/CSS'))); // CSS 경로 지정
+app.use('/image', express.static(path.join(__dirname, 'public/image')));
+
+// CORS 설정 추가
+app.use(cors({
+    origin: '*', // 모든 도메인 허용
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // 모든 메서드 허용
+    allowedHeaders: ['Content-Type', 'Authorization'] // 필요 시 허용할 헤더 추가
+}));
+
+// CORS preflight 요청에 대한 처리
+app.options('*', cors());
+
+app.get('/process/menu', (req, res) => {  // 메뉴 선택 페이지 불러오기
+    res.sendFile(path.join(__dirname, 'public/HTML/SSS_home_page.html'));
+});
+app.get('/process/list_of_workers', (req, res) => {  // 직원 목록 페이지 불러오기
+    res.sendFile(path.join(__dirname, 'public/HTML/SSS_list_of_workers.html'));
+});
+app.get('/process/location_and_status', (req, res) => {  // 위치 및 상태 페이지 불러오기
+    res.sendFile(path.join(__dirname, 'public/HTML/SSS_location_and_status.html'));
+});
+app.get('/process/login2', (req, res) => {  // 일반 작업자 로그인 페이지 불러오기
+    res.sendFile(path.join(__dirname, 'public/HTML/SSS_login2.html'));
+});
+app.get('/process/login3', (req, res) => {  // 장비 작업자 로그인 페이지 불러오기
+    res.sendFile(path.join(__dirname, 'public/HTML/SSS_login3.html'));
+});
+
+app.
+
+app.post('/process/logout', (req, res) => {  // 로그아웃 처리
+    res.redirect('/process/login1');
+});
+
+app.post('/process/worker_login', (req, res) => {  // 일반 작업자 로그인 처리
+    const { ph_num, pw, HM_num, action } = req.body;
+
+    if (!ph_num || !pw || !HM_num) {
+        res.status(400).send('전화번호, 비밀번호, 안전모번호를 모두 입력해주세요.');
+        return;
+    }
+
+    console.log(`Received Data - Phone: ${ph_num}, Password: ${pw}, Helmet Number: ${HM_num}, Action: ${action}`); // 입력된 데이터 로그
+
+    pool.getConnection((err, conn) => {
+        if (err) {
+            if (conn) conn.release();
+            console.log('Mysql getConnection error');
+            res.status(500).send('서버 오류입니다.');
+            return;
+        }
+
+        const hashedPassword = crypto.createHash('sha512').update(pw.toString()).digest('base64');
+
+        const exec = conn.query("SELECT * FROM member WHERE member_phone = ? AND member_password = ?",
+            [ph_num, hashedPassword],
+            (err, result) => {
+                if (err) {
+                    conn.release();
+                    console.log('SQL 실행 시 오류 발생');
+                    console.dir(err);
+                    res.status(500).send('데이터베이스 오류입니다.');
+                    return;
+                }
+
+                if (result.length > 0) {
+                    const member_number = result[0].member_number;
+                    console.log(`Member Found - Member Number: ${member_number}`); // 멤버 번호 로그
+
+                    if (action === '출근') {
+                        const insertEnter = conn.query("INSERT INTO enter (enter_helmet_number, member_number) VALUES (?, ?)",
+                            [HM_num, member_number],
+                            (err, result) => {
+                                if (err) {
+                                    conn.release();
+                                    console.log('출근 시 오류 발생');
+                                    console.dir(err);
+                                    res.status(500).send('데이터베이스 오류입니다.');
+                                    return;
+                                }
+
+                                const updateAttendance = conn.query("UPDATE member SET member_attendance = 1 WHERE member_number = ?",
+                                    [member_number],
+                                    (err, result) => {
+                                        conn.release();
+                                        if (err) {
+                                            console.log('출근 상태 업데이트 시 오류 발생');
+                                            console.dir(err);
+                                            res.status(500).send('데이터베이스 오류입니다.');
+                                            return;
+                                        }
+
+                                        console.log('출근 처리 완료'); // 출근 처리 완료 로그
+                                        res.redirect('/process/login2'); // 출근 처리 후 일반 작업자 로그인 페이지로 리디렉션
+                                    });
+                            });
+                    } else if (action === '퇴근') {
+                        const deleteEnter = conn.query("DELETE FROM enter WHERE member_number = ?",
+                            [member_number],
+                            (err, result) => {
+                                if (err) {
+                                    conn.release();
+                                    console.log('퇴근 시 오류 발생');
+                                    console.dir(err);
+                                    res.status(500).send('데이터베이스 오류입니다.');
+                                    return;
+                                }
+
+                                const updateAttendance = conn.query("UPDATE member SET member_attendance = 0 WHERE member_number = ?",
+                                    [member_number],
+                                    (err, result) => {
+                                        conn.release();
+                                        if (err) {
+                                            console.log('퇴근 상태 업데이트 시 오류 발생');
+                                            console.dir(err);
+                                            res.status(500).send('데이터베이스 오류입니다.');
+                                            return;
+                                        }
+
+                                        console.log('퇴근 처리 완료'); // 퇴근 처리 완료 로그
+                                        res.redirect('/process/login2'); // 퇴근 처리 후 일반 작업자 로그인 페이지로 리디렉션
+                                    });
+                            });
+                    } else {
+                        conn.release();
+                        res.status(400).send('잘못된 요청입니다.');
+                    }
+                } else {
+                    conn.release();
+                    res.status(401).send('전화번호 또는 비밀번호가 올바르지 않습니다.');
+                }
+            });
+    });
+});
+
+app.post('/process/equipment_worker_login', (req, res) => {  // 장비 작업자 로그인 처리
+    const { ph_num, pw, HM_num, TB_num, action } = req.body;
+
+    if (!ph_num || !pw || !HM_num) {
+        res.status(400).send('전화번호, 비밀번호, 안전모번호를 모두 입력해주세요.');
+        return;
+    }
+
+    console.log(`Received Data - Phone: ${ph_num}, Password: ${pw}, Helmet Number: ${HM_num}, Tablet Number: ${TB_num}, Action: ${action}`); // 입력된 데이터 로그
+
+    pool.getConnection((err, conn) => {
+        if (err) {
+            if (conn) conn.release();
+            console.log('Mysql getConnection error');
+            res.status(500).send('서버 오류입니다.');
+            return;
+        }
+
+        const hashedPassword = crypto.createHash('sha512').update(pw.toString()).digest('base64');
+
+        const exec = conn.query("SELECT * FROM member WHERE member_phone = ? AND member_password = ?",
+            [ph_num, hashedPassword],
+            (err, result) => {
+                if (err) {
+                    conn.release();
+                    console.log('SQL 실행 시 오류 발생');
+                    console.dir(err);
+                    res.status(500).send('데이터베이스 오류입니다.');
+                    return;
+                }
+
+                if (result.length > 0) {
+                    const member_number = result[0].member_number;
+                    console.log(`Member Found - Member Number: ${member_number}`); // 멤버 번호 로그
+
+                    if (action === '출근') {
+                        const insertEnter = conn.query("INSERT INTO enter (enter_helmet_number, enter_tablet_number, member_number) VALUES (?, ?, ?)",
+                            [HM_num, TB_num, member_number],
+                            (err, result) => {
+                                if (err) {
+                                    conn.release();
+                                    console.log('출근 시 오류 발생');
+                                    console.dir(err);
+                                    res.status(500).send('데이터베이스 오류입니다.');
+                                    return;
+                                }
+
+                                const updateAttendance = conn.query("UPDATE member SET member_attendance = 1 WHERE member_number = ?",
+                                    [member_number],
+                                    (err, result) => {
+                                        conn.release();
+                                        if (err) {
+                                            console.log('출근 상태 업데이트 시 오류 발생');
+                                            console.dir(err);
+                                            res.status(500).send('데이터베이스 오류입니다.');
+                                            return;
+                                        }
+
+                                        console.log('출근 처리 완료'); // 출근 처리 완료 로그
+                                        res.redirect('/process/login3'); // 출근 처리 후 장비 작업자 로그인 페이지로 리디렉션
+                                    });
+                            });
+                    } else if (action === '퇴근') {
+                        const deleteEnter = conn.query("DELETE FROM enter WHERE member_number = ?",
+                            [member_number],
+                            (err, result) => {
+                                if (err) {
+                                    conn.release();
+                                    console.log('퇴근 시 오류 발생');
+                                    console.dir(err);
+                                    res.status(500).send('데이터베이스 오류입니다.');
+                                    return;
+                                }
+
+                                const updateAttendance = conn.query("UPDATE member SET member_attendance = 0 WHERE member_number = ?",
+                                    [member_number],
+                                    (err, result) => {
+                                        conn.release();
+                                        if (err) {
+                                            console.log('퇴근 상태 업데이트 시 오류 발생');
+                                            console.dir(err);
+                                            res.status(500).send('데이터베이스 오류입니다.');
+                                            return;
+                                        }
+
+                                        console.log('퇴근 처리 완료'); // 퇴근 처리 완료 로그
+                                        res.redirect('/process/login3'); // 퇴근 처리 후 장비 작업자 로그인 페이지로 리디렉션
+                                    });
+                            });
+                    } else {
+                        conn.release();
+                        res.status(400).send('잘못된 요청입니다.');
+                    }
+                } else {
+                    conn.release();
+                    res.status(401).send('전화번호 또는 비밀번호가 올바르지 않습니다.');
+                }
+            });
+    });
+});
+
+////////////////////////////////////////////////////////////////////
+
+/////////////////////////////로그인//////////////////////////////////
+app.get('/process/login1', (req, res) => {  // 관리자 로그인 페이지 불러오기
+    res.sendFile(path.join(__dirname, 'public/HTML/SSS_login1.html'));
+});
+
+app.post('/process/login1', (req, res) => {
+    const paramPhone = req.body.ph_num;
+    const paramPassword = req.body.pw;
+
+    if (!paramPhone || !paramPassword) {
+        res.status(400).send('전화번호와 비밀번호를 모두 입력해주세요.');
+        return;
+    }
+
+    pool.getConnection((err, conn) => {
+        if (err) {
+            if (conn) conn.release();
+            console.log('Mysql getConnection error');
+            res.status(500).send('서버 오류입니다.');
+            return;
+        }
+
+        console.log('데이터베이스 연결');
+
+        const hashedPassword = crypto.createHash('sha512').update(paramPassword.toString()).digest('base64');
+
+        const exec = conn.query("SELECT * FROM member WHERE member_phone = ? AND member_password = ?",
+            [paramPhone, hashedPassword],
+            (err, result) => {
+                conn.release();
+                console.log('실행된 SQL: ' + exec.sql);
+
+                if (err) {
+                    console.log('SQL 실행 시 오류 발생');
+                    console.dir(err);
+                    res.status(500).send('데이터베이스 오류입니다.');
+                    return;
+                }
+
+                if (result.length > 0) {
+                    const userPosition = result[0].member_position;
+                    if (userPosition === '관리자') {
+                        console.log('로그인 성공 (관리자)');
+                        res.redirect('/process/menu'); // 관리자일 경우 /process/menu로 리디렉션
+                    } else if(userPosition === '일반 작업자'){
+                        console.log('로그인 성공 (일반 작업자)');
+                        res.redirect('/process/login2');
+                    } else {
+                        console.log('로그인 성공 (장비 작업자)');
+                        res.redirect('/process/login3');
+                    }
+                } else {
+                    console.log('로그인 실패');
+                    res.status(401).send('아이디 또는 비밀번호가 올바르지 않습니다.');
+                }
+            }
+        );
+    });
+});
+
+////////////////////////////////////////////////////////////////////
+
+////////////////////////////회원가입/////////////////////////////////
+app.get('/process/join_membership', (req, res) => {  // 회원가입 페이지 불러오기
+    res.sendFile(path.join(__dirname, 'public/HTML/SSS_join_membership.html'));
+})
+
+app.post('/process/join_membership', (req, res) => {
+    console.log('/process/join_membership 호출됨 ' + req)
+
+    const paramName = req.body.name;
+    const paramPassword = req.body.pw;
+    const paramPhone = req.body.ph_num;
+    const paramBirth = req.body.birth;
+    const paramGender = req.body.gender;
+    const paramBlood = req.body.blood;
+    const paramPosition = req.body.position;
+    const paramVisit = req.body.purpose_visit;
+    const paramLeaved = req.body.isleaved_company;
+
+    const hashedPassword = crypto.createHash('sha512').update(paramPassword.toString()).digest('base64');
+    console.log(hashedPassword)
+
+    pool.getConnection((err, conn) => {
+        if (err) {
+            if (conn) conn.release();
+            console.log('mysql getConnection error. aborted' + err);
+            res.status(500).send('서버 오류입니다.')
+            return;
+        }
+
+        console.log('데이터베이스 연결 성공');
+
+        const exec = conn.query("INSERT INTO member (member_name, member_password, member_phone, member_birth, member_gender, member_blood, member_position, member_purpose_visit, member_isLeaved_company) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            [paramName, hashedPassword, paramPhone, paramBirth, paramGender, paramBlood, paramPosition, paramVisit, paramLeaved],
+            (err, result) => {
+                conn.release();
+                console.log('실행된 SQL: ' + exec.sql)
+
+                if (err) {
+                    console.log('SQL 실행 시 오류 발생!')
+                    console.dir(err)
+                    res.status(500).send('DB 에러')
+                    return
+                }
+
+                if (result) {
+                    console.dir(result)
+                    console.log('Insert Success!')
+                }
+
+                console.log('성공')
+                res.redirect('/process/login1'); // 회원가입 후 로그인 페이지로 리디렉션
+            }
+        )
+    })
+})
+
+////////////////////////////////////////////////////////////////////
+
+////////////////////////////직원 관리/////////////////////////////////
+app.post('/process/list_of_workers', (req, res) => {  // 직원 목록 페이지 불러오기
+    res.sendFile(path.join(__dirname, 'public/HTML/SSS_list_of_workers.html'));
+})
+
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use('/public', static(path.join(__dirname, 'public')));
+
+app.get('/members', (req, res) => {
+    const currentPage = req.query.page || 1;
+    const workersPerPage = 8; // 페이지당 작업자 수
+    const startIndex = (currentPage - 1) * workersPerPage;
+    const positions = req.query.positions ? req.query.positions.split(',') : [];
+
+    let sql = "SELECT * FROM member";
+    let params = [];
+
+    if (positions.length > 0) {
+        const placeholders = positions.map(() => '?').join(', ');
+        sql += ` WHERE member_position IN (${placeholders})`;
+        params = positions.map(position => {
+            if (position === 'administrator') return '관리자';
+            if (position === 'worker') return '일반 작업자';
+            if (position === 'equipment_worker') return '장비 작업자';
+        });
+    }
+
+    sql += " LIMIT ?, ?";
+    params.push(startIndex, workersPerPage);
+
+    pool.getConnection((err, conn) => {
+        if (err) {
+            console.error('Error getting database connection:', err);
+            res.status(500).send('Server Error');
+            return;
+        }
+        conn.query(sql, params, (err, result) => {
+            conn.release();
+            if (err) {
+                console.error('Error executing query:', err);
+                res.status(500).send('Database Error');
+                return;
+            }
+            res.json(result);
+        });
+    });
+});
+
+app.get('/members/search', (req, res) => {
+    const currentPage = req.query.page || 1;
+    const workersPerPage = 8; // 페이지당 작업자 수 변경
+    const startIndex = (currentPage - 1) * workersPerPage;
+    const searchTerm = req.query.name;
+    const positions = req.query.positions ? req.query.positions.split(',') : [];
+
+    let sql = "SELECT * FROM member WHERE member_name LIKE ?";
+    let params = [`%${searchTerm}%`];
+
+    if (positions.length > 0) {
+        const placeholders = positions.map(() => '?').join(', ');
+        sql += ` AND member_position IN (${placeholders})`;
+        params = params.concat(positions.map(position => {
+            if (position === 'administrator') return '관리자';
+            if (position === 'worker') return '일반 작업자';
+            if (position === 'equipment_worker') return '장비 작업자';
+        }));
+    }
+
+    sql += " LIMIT ?, ?";
+    params.push(startIndex, workersPerPage);
+
+    pool.getConnection((err, conn) => {
+        if (err) {
+            console.error('Error getting database connection:', err);
+            res.status(500).send('Server Error');
+            return;
+        }
+        conn.query(sql, params, (err, result) => {
+            conn.release();
+            if (err) {
+                console.error('Error executing query:', err);
+                res.status(500).send('Database Error');
+                return;
+            }
+            res.json(result);
+        });
+    });
+});
+
+////////////////////////////메뉴선택/////////////////////////////////
+
+app.listen(8080, () => {
+    console.log('Listening on port 8080');
+});
